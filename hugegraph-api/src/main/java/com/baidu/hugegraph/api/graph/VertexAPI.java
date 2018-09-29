@@ -262,7 +262,7 @@ public class VertexAPI extends BatchAPI {
     }
 
     @JsonIgnoreProperties(value = {"type"})
-    private static class JsonVertex implements Checkable {
+    public static class JsonVertex implements Checkable {
 
         @JsonProperty("id")
         public Object id;
