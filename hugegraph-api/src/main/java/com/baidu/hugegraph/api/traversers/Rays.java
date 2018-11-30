@@ -58,8 +58,8 @@ public class Rays extends API {
                       @QueryParam("source") String sourceV,
                       @QueryParam("direction") String direction,
                       @QueryParam("label") String edgeLabel,
-                      @QueryParam("depth") int depth,
-                      @QueryParam("degree") @DefaultValue("-1") long degree,
+                      @QueryParam("max_depth") int depth,
+                      @QueryParam("max_degree") @DefaultValue("-1") long degree,
                       @QueryParam("capacity") @DefaultValue("-1") long capacity,
                       @QueryParam("limit") @DefaultValue("-1") long limit) {
         LOG.debug("Graph [{}] get rays paths from '{}' with " +

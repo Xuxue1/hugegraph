@@ -59,7 +59,7 @@ public class KneighborAPI extends API {
                       @QueryParam("direction") String direction,
                       @QueryParam("label") String edgeLabel,
                       @QueryParam("depth") int depth,
-                      @QueryParam("degree") @DefaultValue("-1") long degree,
+                      @QueryParam("max_degree") @DefaultValue("-1") long degree,
                       @QueryParam("limit") @DefaultValue("-1") long limit) {
         LOG.debug("Graph [{}] get k-neighbor from '{}' with " +
                   "direction '{}', edge label '{}', depth '{}', " +

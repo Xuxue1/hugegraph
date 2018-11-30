@@ -61,7 +61,7 @@ public class KoutAPI extends API {
                       @QueryParam("depth") int depth,
                       @QueryParam("nearest")
                       @DefaultValue("true")  boolean nearest,
-                      @QueryParam("degree") @DefaultValue("-1") long degree,
+                      @QueryParam("max_degree") @DefaultValue("-1") long degree,
                       @QueryParam("capacity") @DefaultValue("-1") long capacity,
                       @QueryParam("limit") @DefaultValue("-1") long limit) {
         LOG.debug("Graph [{}] get k-out from '{}' with " +
