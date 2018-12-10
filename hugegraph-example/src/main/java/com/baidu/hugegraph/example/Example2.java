@@ -19,7 +19,14 @@
 
 package com.baidu.hugegraph.example;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
@@ -32,8 +39,16 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.slf4j.Logger;
 
 import com.baidu.hugegraph.HugeGraph;
+import com.baidu.hugegraph.backend.id.IdGenerator;
+import com.baidu.hugegraph.schema.EdgeLabel;
 import com.baidu.hugegraph.schema.SchemaManager;
+import com.baidu.hugegraph.schema.VertexLabel;
+import com.baidu.hugegraph.structure.HugeEdge;
+import com.baidu.hugegraph.structure.HugeVertex;
+import com.baidu.hugegraph.type.define.Directions;
+import com.baidu.hugegraph.util.E;
 import com.baidu.hugegraph.util.Log;
+import com.google.common.collect.ImmutableSet;
 
 public class Example2 {
 
@@ -45,11 +60,293 @@ public class Example2 {
         HugeGraph graph = ExampleUtil.loadGraph();
 
         Example2.load(graph);
-        traversal(graph);
 
+        int maxDepth = 25;
+//        Map<Object, Double> rank = Example2.personRank(graph, IdGenerator.of("A"), 0.5, 3);
+        Map<Object, Double> rank = Example2.neighborRank2(graph, IdGenerator.of("A"), "rate", 0.5, maxDepth);
+        // 根据值大小排序
+        StringBuilder result = new StringBuilder();
+        result.append("| ").append(maxDepth).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("A"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("B"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("C"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("a"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("b"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("c"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append(((int) (rank.getOrDefault(IdGenerator.of("d"), 0.0) * 1000)) / 1000.0).append(" | ");
+        result.append("1.0").append(" |");
+        System.out.println(result);
+
+        System.out.println(sortByValue(rank));
+//        traversal(graph);
         graph.close();
 
         HugeGraph.shutdown(30L);
+    }
+
+    public static Map<Object, Double> personRank(final HugeGraph graph,
+                                                 Object vertexId,
+                                                 double alpha,
+                                                 int iterCount) {
+        long beg = System.currentTimeMillis();
+
+        GraphTraversalSource g = graph.traversal();
+
+        Map<Object, Double> rank = makeEmptyRank(g);
+        // 起点选择概率为1,其他顶点为0
+        rank.put(vertexId, 1.0);
+
+        // 开始迭代
+        for (int i = 0; i < iterCount; i++) {
+            Map<Object, Double> tmp = makeEmptyRank(g);
+            // 遍历每一个顶点
+            GraphTraversal<Vertex, Vertex> vertices = g.V();
+            while (vertices.hasNext()) {
+                Vertex vertex = vertices.next();
+                // 遍历每个顶点连接的顶点
+                List<Vertex> boths = g.V(vertex.id()).out().toList();
+                for (Vertex bothVertex : boths) {
+                    double weight = tmp.get(bothVertex.id());
+                    weight += alpha * rank.get(vertex.id()) / boths.size();
+                    tmp.put(bothVertex.id(), weight);
+                }
+            }
+            double rootWeight = tmp.get(vertexId);
+            rootWeight += 1 - alpha;
+            tmp.put(vertexId, rootWeight);
+
+            rank = tmp;
+        }
+
+        long end = System.currentTimeMillis();
+        System.out.println("耗时：" + (end - beg) / 1000.0F);
+        System.out.println("总和：" + rank.values().stream().reduce((a, b) -> a + b).get());
+        return rank;
+    }
+
+    public static Map<Object, Double> neighborRank2(HugeGraph graph,
+                                                   Object vertexId,
+                                                   String label,
+                                                   double alpha,
+                                                   int maxDepth) {
+        E.checkArgument(maxDepth >= 1, "Must > 1");
+        long beg = System.currentTimeMillis();
+
+        GraphTraversalSource g = graph.traversal();
+        // TODO: check exist
+        HugeVertex vertex = (HugeVertex) g.V(vertexId).next();
+        VertexLabel vertexLabel = vertex.schemaLabel();
+        HugeEdge edge = (HugeEdge) g.V(vertexId).bothE(label).next();
+        EdgeLabel edgeLabel = edge.schemaLabel();
+
+//        Map<String, Directions> labelDirs = new HashMap<>();
+//        if (edgeLabel.sourceLabel().equals(vertexLabel.id())) {
+//            labelDirs.put(graph.vertexLabel(edgeLabel.sourceLabel()).name(), Directions.OUT);
+//            labelDirs.put(graph.vertexLabel(edgeLabel.targetLabel()).name(), Directions.IN);
+//        } else {
+//            labelDirs.put(graph.vertexLabel(edgeLabel.sourceLabel()).name(), Directions.IN);
+//            labelDirs.put(graph.vertexLabel(edgeLabel.targetLabel()).name(), Directions.OUT);
+//        }
+
+        Map<Object, Double> rank = new HashMap<>();
+        rank.put(vertex.id(), 1.0);
+        rank = collectWeight2(graph, vertexId, label, 1, rank, alpha, maxDepth);
+
+        long end = System.currentTimeMillis();
+        System.out.println("耗时：" + (end - beg) / 1000.0F);
+        System.out.println("总和：" + rank.values().stream().reduce((a, b) -> a + b).get());
+        return rank;
+    }
+
+    /**
+     * 我自己的算法 both 版
+     * @param graph
+     * @param depth
+     * @param rank
+     * @param alpha
+     * @param maxDepth
+     * @return
+     */
+    private static Map<Object, Double> collectWeight2(HugeGraph graph,
+                                                      Object source,
+                                                      String edgeLabel,
+//                                                      Map<String, Directions> labelDirs,
+                                                      int depth,
+                                                      Map<Object, Double> rank,
+                                                      double alpha,
+                                                      int maxDepth) {
+        assert depth <= maxDepth;
+        GraphTraversalSource g = graph.traversal();
+
+        // 收集当前节点和其指定方向和label的邻居节点
+        Set<Vertex> vertices = new HashSet<>();
+        for (Object vid : rank.keySet()) {
+            vertices.add(g.V(vid).next());
+            vertices.addAll(g.V(vid).both(edgeLabel).toSet());
+        }
+
+        Map<Object, Double> tmpRank = new HashMap<>();
+        for (Vertex vertex : vertices) {
+            Object vertexId = vertex.id();
+            // 自己对自己的贡献
+            double nextWeight = tmpRank.getOrDefault(vertexId, 0.0);
+//            double nextWeight = selfContribution(graph, vertexId, edgeLabel, rank, alpha);
+
+            // 它的所有邻居顶点对自己的贡献
+            GraphTraversal<Vertex, Vertex> neighborVertices = g.V(vertexId).both(edgeLabel);
+            while (neighborVertices.hasNext()) {
+                Vertex neighborVertex = neighborVertices.next();
+                Double neighborVertexWeight = rank.get(neighborVertex.id());
+                // 如果当前顶点还不存在权重，则跳过
+                if (neighborVertexWeight == null) {
+                    continue;
+                }
+                long degree = g.V(neighborVertex.id()).both().count().next();
+//                Directions dir = labelDirs.get(neighborVertex.label());
+//                if (dir == Directions.OUT) {
+//                    // 计算顶点的出度
+//                    degree = g.V(neighborVertex.id()).out().count().next();
+//                } else {
+//                    assert dir == Directions.IN;
+//                    // 计算顶点的入度
+//                    degree = g.V(neighborVertex.id()).in().count().next();
+//                }
+                assert degree > 0;
+                nextWeight += neighborVertexWeight * alpha / degree;
+            }
+            // 更新顶点的权重
+            tmpRank.put(vertexId, nextWeight);
+        }
+        double sourceRank = tmpRank.get(source);
+        sourceRank += (1 - alpha);
+        tmpRank.put(source, sourceRank);
+
+        // 如果已经达到指定步数，则返回，否则继续
+        if (++depth > maxDepth) {
+            return tmpRank;
+        }
+        return collectWeight2(graph, source, edgeLabel, depth, tmpRank, alpha, maxDepth);
+    }
+
+    private static double selfContribution(HugeGraph graph, Object vertexId, String edgeLabel,
+                                           Map<Object, Double> rank, double alpha) {
+        GraphTraversalSource g = graph.traversal();
+
+        // 它自己对自己的贡献
+        Double lastWeight = rank.get(vertexId);
+        if (lastWeight == null) {
+            lastWeight = 0.0;
+        }
+        double nextWeight = lastWeight * (1 - alpha);
+        long outCount = g.V(vertexId).both(edgeLabel).count().next();
+        if (outCount == 0) {
+            nextWeight = lastWeight;
+        }
+        return nextWeight;
+    }
+
+
+    public static Map<Object, Double> neighborRank3(HugeGraph graph,
+                                                    Object vertexId,
+                                                    String label,
+                                                    double alpha,
+                                                    int maxDepth) {
+        E.checkArgument(maxDepth >= 1, "Must > 1");
+        long beg = System.currentTimeMillis();
+
+        GraphTraversalSource g = graph.traversal();
+        // TODO: check exist
+        HugeVertex vertex = (HugeVertex) g.V(vertexId).next();
+
+        Map<Object, Double> rank = new HashMap<>();
+        rank.put(vertex.id(), 1.0);
+        rank = collectWeight3(graph, ImmutableSet.of(vertexId), label, 1, rank, alpha, maxDepth);
+
+        long end = System.currentTimeMillis();
+        System.out.println("耗时：" + (end - beg) / 1000.0F);
+        System.out.println("总和：" + rank.values().stream().reduce((a, b) -> a + b).get());
+        return rank;
+    }
+
+    private static Map<Object, Double> collectWeight3(HugeGraph graph,
+                                                      Set<Object> vertices,
+                                                      String edgeLabel,
+                                                      int depth,
+                                                      Map<Object, Double> rank,
+                                                      double alpha,
+                                                      int maxDepth) {
+        assert depth <= maxDepth;
+        GraphTraversalSource g = graph.traversal();
+
+        Set<Object> tmpVertices = new HashSet<>();
+        Map<Object, Double> tmpRank = new HashMap<>();
+        // 外层做贡献的顶点
+        for (Object vertexId : vertices) {
+            long degree = g.V(vertexId).bothE(edgeLabel).count().next();
+            assert degree > 0;
+
+            // 这个应该肯定存在的
+            double vertexWeight = rank.get(vertexId);
+            double spreadWeight = vertexWeight * alpha / degree;
+
+            GraphTraversal<Vertex, Vertex> neighborVertices = g.V(vertexId).both(edgeLabel);
+            while (neighborVertices.hasNext()) {
+                Vertex neighborVertex = neighborVertices.next();
+                Double neighborVertexWeight = tmpRank.get(neighborVertex.id());
+                // 如果当前顶点还不存在权重，则赋上初始值
+                if (neighborVertexWeight == null) {
+                    neighborVertexWeight = 0.0;
+                }
+                // 目标顶点加上被贡献的值（不应该原地更新）
+                neighborVertexWeight += spreadWeight;
+                tmpVertices.add(neighborVertex.id());
+                tmpRank.put(neighborVertex.id(), neighborVertexWeight);
+            }
+        }
+
+        // 源顶点直接乘以(1 - alpha)即可
+        for (Object vertexId : vertices) {
+            double vertexWeight = rank.get(vertexId);
+            vertexWeight *= (1 - alpha);
+            rank.put(vertexId, vertexWeight);
+        }
+        // 目标顶点加上原有的值
+        for (Map.Entry<Object, Double> entry : tmpRank.entrySet()) {
+            Double oldWeight = rank.get(entry.getKey());
+            if (oldWeight == null) {
+                oldWeight = 0.0;
+            }
+            double increment = entry.getValue();
+            rank.put(entry.getKey(), oldWeight + increment);
+        }
+        // 如果已经达到指定步数，则返回，否则继续
+        if (++depth > maxDepth) {
+            return rank;
+        }
+        return collectWeight3(graph, tmpVertices, edgeLabel, depth, rank, alpha, maxDepth);
+    }
+
+    private static Map<Object, Double> makeEmptyRank(GraphTraversalSource g) {
+        Map<Object, Double> rank = new HashMap<>();
+        GraphTraversal<Vertex, Vertex> vertices = g.V();
+        // 将所有的点的权重都赋值为0
+        while (vertices.hasNext()) {
+            Vertex vertex = vertices.next();
+            rank.put(vertex.id(), 0.0);
+        }
+        return rank;
+    }
+
+    public static <K, V extends Comparable<? super V>> Map<K, V> sortByValue(Map<K, V> map) {
+        List<Map.Entry<K, V>> list = new ArrayList<>(map.entrySet());
+        list.sort(Collections.reverseOrder(Map.Entry.comparingByValue()));
+
+        Map<K, V> result = new LinkedHashMap<>();
+        for (Map.Entry<K, V> entry : list) {
+            result.put(entry.getKey(), entry.getValue());
+        }
+
+        return result;
     }
 
     public static void traversal(final HugeGraph graph) {
@@ -143,114 +440,92 @@ public class Example2 {
         SchemaManager schema = graph.schema();
 
         schema.propertyKey("name").asText().ifNotExist().create();
-        schema.propertyKey("age").asInt().ifNotExist().create();
-        schema.propertyKey("city").asText().ifNotExist().create();
         schema.propertyKey("weight").asDouble().ifNotExist().create();
-        schema.propertyKey("lang").asText().ifNotExist().create();
-        schema.propertyKey("date").asText().ifNotExist().create();
-        schema.propertyKey("price").asInt().ifNotExist().create();
 
         schema.vertexLabel("person")
-              .properties("name", "age", "city")
-              .primaryKeys("name")
-              .nullableKeys("age")
+              .useCustomizeStringId()
               .ifNotExist()
               .create();
 
-        schema.vertexLabel("software")
-              .properties("name", "lang", "price")
-              .primaryKeys("name")
-              .nullableKeys("price")
+        schema.vertexLabel("movie")
+              .useCustomizeStringId()
               .ifNotExist()
               .create();
 
-        schema.indexLabel("personByName")
-              .onV("person")
-              .by("name")
-              .secondary()
+        schema.edgeLabel("rate")
+              .sourceLabel("person")
+              .targetLabel("movie")
+              .properties("weight")
               .ifNotExist()
               .create();
 
-        schema.indexLabel("personByCity")
-              .onV("person")
-              .by("city")
-              .secondary()
+        Vertex A = graph.addVertex(T.label, "person", T.id, "A");
+        Vertex B = graph.addVertex(T.label, "person", T.id, "B");
+        Vertex C = graph.addVertex(T.label, "person", T.id, "C");
+
+        Vertex a = graph.addVertex(T.label, "movie", T.id, "a");
+        Vertex b = graph.addVertex(T.label, "movie", T.id, "b");
+        Vertex c = graph.addVertex(T.label, "movie", T.id, "c");
+        Vertex d = graph.addVertex(T.label, "movie", T.id, "d");
+
+        A.addEdge("rate", a, "weight", 1.0);
+        A.addEdge("rate", c, "weight", 1.0);
+
+        B.addEdge("rate", a, "weight", 1.0);
+        B.addEdge("rate", b, "weight", 1.0);
+        B.addEdge("rate", c, "weight", 1.0);
+        B.addEdge("rate", d, "weight", 1.0);
+
+        C.addEdge("rate", c, "weight", 1.0);
+        C.addEdge("rate", d, "weight", 1.0);
+
+        graph.tx().commit();
+    }
+
+    public static void load2(final HugeGraph graph) {
+        SchemaManager schema = graph.schema();
+
+        schema.propertyKey("name").asText().ifNotExist().create();
+        schema.propertyKey("weight").asDouble().ifNotExist().create();
+
+        schema.vertexLabel("person")
+              .useCustomizeStringId()
               .ifNotExist()
               .create();
 
-        schema.indexLabel("personByAgeAndCity")
-              .onV("person")
-              .by("age", "city")
-              .secondary()
-              .ifNotExist()
-              .create();
-
-        schema.indexLabel("softwareByPrice")
-              .onV("software")
-              .by("price")
-              .range()
-              .ifNotExist()
-              .create();
-
-        schema.edgeLabel("knows")
-              .multiTimes()
+        schema.edgeLabel("follow")
               .sourceLabel("person")
               .targetLabel("person")
-              .properties("date", "weight")
-              .sortKeys("date")
-              .nullableKeys("weight")
+              .properties("weight")
               .ifNotExist()
               .create();
 
-        schema.edgeLabel("created")
-              .sourceLabel("person").targetLabel("software")
-              .properties("date", "weight")
-              .nullableKeys("weight")
-              .ifNotExist()
-              .create();
+        Vertex A = graph.addVertex(T.label, "person", T.id, "A");
+        Vertex B = graph.addVertex(T.label, "person", T.id, "B");
+        Vertex C = graph.addVertex(T.label, "person", T.id, "C");
+        Vertex D = graph.addVertex(T.label, "person", T.id, "D");
+        Vertex F = graph.addVertex(T.label, "person", T.id, "F");
+        Vertex G = graph.addVertex(T.label, "person", T.id, "G");
+        Vertex V = graph.addVertex(T.label, "person", T.id, "V");
+        Vertex S = graph.addVertex(T.label, "person", T.id, "S");
 
-        schema.indexLabel("createdByDate")
-              .onE("created")
-              .by("date")
-              .secondary()
-              .ifNotExist()
-              .create();
+        A.addEdge("follow", C, "weight", 1.0);
+        A.addEdge("follow", F, "weight", 1.0);
 
-        schema.indexLabel("createdByWeight")
-              .onE("created")
-              .by("weight")
-              .range()
-              .ifNotExist()
-              .create();
+        B.addEdge("follow", C, "weight", 1.0);
+        B.addEdge("follow", V, "weight", 1.0);
 
-        schema.indexLabel("knowsByWeight")
-              .onE("knows")
-              .by("weight")
-              .range()
-              .ifNotExist()
-              .create();
+        C.addEdge("follow", V, "weight", 1.0);
 
-        graph.tx().open();
+        D.addEdge("follow", V, "weight", 1.0);
 
-        Vertex marko = graph.addVertex(T.label, "person", "name", "marko",
-                                       "age", 29, "city", "Beijing");
-        Vertex vadas = graph.addVertex(T.label, "person", "name", "vadas",
-                                       "age", 27, "city", "Hongkong");
-        Vertex lop = graph.addVertex(T.label, "software", "name", "lop",
-                                     "lang", "java", "price", 328);
-        Vertex josh = graph.addVertex(T.label, "person", "name", "josh",
-                                      "age", 32, "city", "Beijing");
-        Vertex ripple = graph.addVertex(T.label, "software", "name", "ripple",
-                                        "lang", "java", "price", 199);
-        Vertex peter = graph.addVertex(T.label, "person", "name", "peter",
-                                       "age", 35, "city", "Shanghai");
+        F.addEdge("follow", D, "weight", 1.0);
+        F.addEdge("follow", G, "weight", 1.0);
+        F.addEdge("follow", V, "weight", 1.0);
 
-        marko.addEdge("knows", vadas, "date", "20160110", "weight", 0.5);
-        marko.addEdge("knows", josh, "date", "20130220", "weight", 1.0);
-        marko.addEdge("created", lop, "date", "20171210", "weight", 0.4);
-        josh.addEdge("created", lop, "date", "20091111", "weight", 0.4);
-        josh.addEdge("created", ripple, "date", "20171210", "weight", 1.0);
-        peter.addEdge("created", lop, "date", "20170324", "weight", 0.2);
+        G.addEdge("follow", A, "weight", 1.0);
+
+        V.addEdge("follow", S, "weight", 1.0);
 
         graph.tx().commit();
     }
